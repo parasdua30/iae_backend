@@ -3,12 +3,6 @@ import { Server } from "socket.io";
 import { createServer } from "http";
 import cors from "cors";
 import { corsOptions } from "./constants/config.js";
-import {
-    CALLING,
-    CALL_ACCEPTED,
-    INCOMING_CALL,
-    ROOM_JOINED,
-} from "../client/constants/events.js";
 
 const PORT = 8000 || process.env.PORT;
 
