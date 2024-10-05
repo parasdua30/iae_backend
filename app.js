@@ -2,6 +2,7 @@ import express from "express";
 import { Server } from "socket.io";
 import { createServer } from "http";
 import cors from "cors";
+import AsyncLock from "async-lock";
 import { corsOptions } from "./constants/config.js";
 
 const PORT = 8000 || process.env.PORT;
@@ -12,25 +13,81 @@ const server = createServer(app);
 app.use(express.json());
 app.use(cors(corsOptions));
 const io = new Server(server, { cors: corsOptions });
+const lock = new AsyncLock();
 
 app.set("io", io);
+
+let editorContent = "";
+let currentLanguage = "cpp";
 
 // <---------- SOCKET ---------->
 const userToSocketIdMap = new Map();
 const socketidToUserMap = new Map();
+
+function getAllConnectedClients(roomId) {
+    // Map
+    return Array.from(io.sockets.adapter.rooms.get(roomId) || []).map(
+        (socketId) => {
+            return {
+                socketId,
+                username: socketidToUserMap[socketId],
+            };
+        }
+    );
+}
 
 io.on("connection", (socket) => {
     console.log("Connected", socket.id);
 
     // Video Call
     socket.on("room:join", (data) => {
-        const { username, room } = data;
+        const { roomId, myName } = data;
+        const username = myName;
+        // console.log(data);
         userToSocketIdMap.set(username, socket.id);
         socketidToUserMap.set(socket.id, username);
 
-        io.to(room).emit("user:joined", { username, id: socket.id });
-        socket.join(room);
-        io.to(socket.id).emit("room:join", data);
+        // io.to(room).emit("user:joined", { username, id: socket.id });
+        // socket.join(room);
+        // io.to(socket.id).emit("room:join", data);
+
+        const clients = getAllConnectedClients(roomId);
+
+        // console.log("number of users in this room", clients);
+
+        if (clients.length > 0) {
+            // console.log(
+            //     `total users in the room currently: ,
+            //     ${socket.id},
+            //     ${clients.length},
+            //     ${clients}`
+            // );
+            io.to(roomId).emit("user:joined", { username, id: socket.id }); // baaki room members ko send karna ki ek new user join ho gaya hai
+            io.to(socket.id).emit("room:join", {
+                // khud ko batana, ki jo other user hai uske baar mein
+                data: data,
+                msg: "id of other user of the room",
+                id: clients[0]?.socketId,
+                otherUserName: socketidToUserMap.get(clients[0]?.socketId),
+                editorContent: editorContent,
+                currentLanguage: currentLanguage,
+            });
+        }
+        console.log(socketidToUserMap);
+        socket.join(roomId);
+    });
+
+    socket.on("editor:request", (name) => {
+        console.log("request from", name);
+        socket.emit("editor:update", {
+            content: editorContent,
+            language: currentLanguage,
+        });
+    });
+
+    socket.on("leave:room", ({ roomId, username }) => {
+        socket.leave(roomId);
+        io.to(roomId).emit("userLeftRoom", { name: username });
     });
 
     socket.on("user:call", ({ to, offer }) => {
@@ -52,9 +109,12 @@ io.on("connection", (socket) => {
     });
 
     // WhiteBoard
-    socket.on("using:whiteboard", ({ fellowUsername }) => {
+    socket.on("using:whiteboard", ({ fellowUsername, roomId }) => {
         // console.log("using:whiteboard", fellowUsername);
-        socket.broadcast.emit("fellow:using:whiteboard", { fellowUsername });
+        socket.to(roomId).emit("fellow:using:whiteboard", {
+            fellowUsername,
+            id: socket.id,
+        });
     });
 
     socket.on("beginPath", (arg) => {
@@ -86,8 +146,32 @@ io.on("connection", (socket) => {
     });
 
     // CodeEditor
-    socket.on("using:editor", ({ fellowUsername }) => {
-        socket.broadcast.emit("fellow:using:editor", { fellowUsername });
+    socket.on("using:editor", ({ fellowUsername, roomId }) => {
+        // socket.broadcast.emit("fellow:using:editor", { fellowUsername });
+        // console.log(`telling that ${fellowUsername} using:editor`);
+        socket.to(roomId).emit("fellow:using:editor", { fellowUsername });
+    });
+
+    socket.on("codeChange", ({ code, roomId }) => {
+        // Acquire a lock before changing the code state
+        lock.acquire("codeLock", (done) => {
+            // codeState = newCode;
+            // Broadcast the new code to all clients except the sender
+            // socket.broadcast.emit("codeUpdate", newCode);
+            editorContent = code;
+            io.to(roomId).emit("codeUpdate", code);
+            done();
+        });
+        // codeState = newCode;
+        // socket.broadcast.emit("codeUpdate", newCode);
+        // console.log("CodeChange", { code, roomId });
+
+        io.to(roomId).emit("codeUpdate", code);
+    });
+
+    socket.on("langChange", ({ language, roomId }) => {
+        currentLanguage = language;
+        io.to(roomId).emit("langChange", language);
     });
 
     /* discarded
